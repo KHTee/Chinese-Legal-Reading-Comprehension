@@ -66,7 +66,6 @@ flags.DEFINE_boolean("do_train", False, "Run training")
 flags.DEFINE_boolean("do_eval", False, "Run evaluation")
 flags.DEFINE_boolean("evaluate_during_training", False,
                      "Run eval during training at each logging step.")
-flags.DEFINE_boolean("do_lower_case", False, "Convert to lower case.")
 flags.DEFINE_integer("batch_size", 4, "Train batch size.")
 flags.DEFINE_integer("eval_batch_size", 4, "Eval batch size.")
 flags.DEFINE_float("learning_rate", 1e-4, "Learning rate.")
@@ -106,6 +105,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def to_list(tensor):
+    """Convert tensor to numpy"""
     return tensor.detach().cpu().tolist()
 
 
@@ -313,13 +313,12 @@ def evaluate(model, tokenizer, prefix=""):
                                    FLAGS.n_best_size, FLAGS.max_answer_length,
                                    output_prediction_file, output_nbest_file,
                                    output_null_log_odds_file,
-                                   FLAGS.predict_file, model.config.start_n_top,
+                                   model.config.start_n_top,
                                    model.config.end_n_top, tokenizer)
     else:
         write_predictions(examples, features, all_results, FLAGS.n_best_size,
-                          FLAGS.max_answer_length, FLAGS.do_lower_case,
-                          output_prediction_file, output_nbest_file,
-                          output_null_log_odds_file,
+                          FLAGS.max_answer_length, output_prediction_file,
+                          output_nbest_file, output_null_log_odds_file,
                           FLAGS.null_score_diff_threshold)
 
     # # Evaluate with the official SQuAD script
@@ -352,8 +351,7 @@ def main(argv):
     FLAGS.model_type = FLAGS.model_type.lower()
     config_class, model_class, tokenizer_class = MODEL_CLASSES[FLAGS.model_type]
     config = config_class.from_pretrained(FLAGS.model_name_or_path)
-    tokenizer = tokenizer_class.from_pretrained(
-        FLAGS.model_name_or_path, do_lower_case=FLAGS.do_lower_case)
+    tokenizer = tokenizer_class.from_pretrained(FLAGS.model_name_or_path)
     model = model_class.from_pretrained(
         FLAGS.model_name_or_path,
         from_tf=bool('.ckpt' in FLAGS.model_name_or_path),

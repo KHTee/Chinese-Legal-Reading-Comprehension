@@ -510,12 +510,23 @@ RawResult = collections.namedtuple("RawResult",
 
 
 def write_predictions(all_examples, all_features, all_results, n_best_size,
-                      max_answer_length, do_lower_case, output_prediction_file,
+                      max_answer_length, output_prediction_file,
                       output_nbest_file, output_null_log_odds_file,
                       null_score_diff_threshold):
     """Write final predictions to the json file and log-odds of null if needed."""
     logger.info("Writing predictions to: %s" % (output_prediction_file))
     logger.info("Writing nbest to: %s" % (output_nbest_file))
+
+    _PrelimPrediction = collections.namedtuple("PrelimPrediction", [
+        "feature_index", "start_index", "end_index", "start_logit", "end_logit"
+    ])
+
+    _NbestPrediction = collections.namedtuple(
+        "NbestPrediction", ["qas_id", "text", "start_logit", "end_logit"])
+
+    all_predictions = collections.OrderedDict()
+    all_nbest_json = collections.OrderedDict()
+    scores_diff_json = collections.OrderedDict()
 
     example_index_to_features = collections.defaultdict(list)
     for feature in all_features:
@@ -525,25 +536,15 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
     for result in all_results:
         unique_id_to_result[result.unique_id] = result
 
-    _PrelimPrediction = collections.namedtuple(  # pylint: disable=invalid-name
-        "PrelimPrediction", [
-            "feature_index", "start_index", "end_index", "start_logit",
-            "end_logit"
-        ])
-
-    all_predictions = collections.OrderedDict()
-    all_nbest_json = collections.OrderedDict()
-    scores_diff_json = collections.OrderedDict()
-
     for (example_index, example) in enumerate(all_examples):
         features = example_index_to_features[example_index]
 
         prelim_predictions = []
-        # keep track of the minimum score of null start+end of position 0
-        score_null = 1000000  # large and positive
+        score_null = 1000000
         min_null_feature_index = 0  # the paragraph slice with min null score
         null_start_logit = 0  # the start logit at the slice with min null score
         null_end_logit = 0  # the end logit at the slice with min null score
+
         for (feature_index, feature) in enumerate(features):
             result = unique_id_to_result[feature.unique_id]
             start_indexes = _get_best_indexes(result.start_logits, n_best_size)
@@ -594,9 +595,6 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                                     key=lambda x: (x.start_logit + x.end_logit),
                                     reverse=True)
 
-        _NbestPrediction = collections.namedtuple(  # pylint: disable=invalid-name
-            "NbestPrediction", ["qas_id", "text", "start_logit", "end_logit"])
-
         seen_predictions = {}
         nbest = []
         for pred in prelim_predictions:
@@ -623,8 +621,9 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                 orig_text = "".join(orig_tokens)
 
                 # for now we dont postprocess final text first.
-                # final_text = get_final_text(tok_text, orig_text, do_lower_case)
+                # final_text = get_final_text(tok_text, orig_text)
                 final_text = tok_text
+
                 if final_text in seen_predictions:
                     continue
 
@@ -705,17 +704,18 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
         all_nbest_json[example.qas_id] = nbest_json
 
     with open(output_prediction_file, "w") as writer:
-        writer.write(
-            json.dumps(all_predictions, indent=4, ensure_ascii=False) + "\n")
+        write_data = json.dumps(all_predictions, indent=4, ensure_ascii=False)
+        writer.write(write_data + "\n")
 
     with open(output_nbest_file, "w") as writer:
-        writer.write(
-            json.dumps(all_nbest_json, indent=4, ensure_ascii=False) + "\n")
+        write_data = json.dumps(all_nbest_json, indent=4, ensure_ascii=False)
+        writer.write(write_data + "\n")
 
     with open(output_null_log_odds_file, "w") as writer:
-        writer.write(
-            json.dumps(scores_diff_json, indent=4, ensure_ascii=False) + "\n")
+        write_data = json.dumps(scores_diff_json, indent=4, ensure_ascii=False)
+        writer.write(write_data + "\n")
 
+    # write JSON file CJRC submission format.
     pred_answer = []
     for k, v in all_predictions.items():
         ans_format = {}
@@ -724,10 +724,8 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
         pred_answer.append(ans_format)
 
     with open("cjrc_result.json", "w") as writer:
-        writer.write(
-            json.dumps(pred_answer, indent=4, ensure_ascii=False) + "\n")
-
-    return all_predictions
+        write_data = json.dumps(pred_answer, indent=4, ensure_ascii=False)
+        writer.write(write_data + "\n")
 
 
 # For XLNet (and XLM which uses the same head)
@@ -740,25 +738,27 @@ RawResultExtended = collections.namedtuple("RawResultExtended", [
 def write_predictions_extended(all_examples, all_features, all_results,
                                n_best_size, max_answer_length,
                                output_prediction_file, output_nbest_file,
-                               output_null_log_odds_file, orig_data_file,
-                               start_n_top, end_n_top, version_2_with_negative,
-                               tokenizer):
+                               output_null_log_odds_file, start_n_top,
+                               end_n_top, tokenizer):
     """ XLNet write prediction logic (more complex than Bert's).
         Write final predictions to the json file and log-odds of null if needed.
 
         Requires utils_squad_evaluate.py
     """
-    _PrelimPrediction = collections.namedtuple(  # pylint: disable=invalid-name
-        "PrelimPrediction", [
-            "feature_index", "start_index", "end_index", "start_log_prob",
-            "end_log_prob"
-        ])
-
-    _NbestPrediction = collections.namedtuple(  # pylint: disable=invalid-name
-        "NbestPrediction", ["text", "start_log_prob", "end_log_prob"])
 
     logger.info("Writing predictions to: %s", output_prediction_file)
-    # logger.info("Writing nbest to: %s" % (output_nbest_file))
+
+    _PrelimPrediction = collections.namedtuple("PrelimPrediction", [
+        "feature_index", "start_index", "end_index", "start_log_prob",
+        "end_log_prob"
+    ])
+
+    _NbestPrediction = collections.namedtuple(
+        "NbestPrediction", ["qas_id", "text", "start_log_prob", "end_log_prob"])
+
+    all_predictions = collections.OrderedDict()
+    all_nbest_json = collections.OrderedDict()
+    scores_diff_json = collections.OrderedDict()
 
     example_index_to_features = collections.defaultdict(list)
     for feature in all_features:
@@ -768,16 +768,11 @@ def write_predictions_extended(all_examples, all_features, all_results,
     for result in all_results:
         unique_id_to_result[result.unique_id] = result
 
-    all_predictions = collections.OrderedDict()
-    all_nbest_json = collections.OrderedDict()
-    scores_diff_json = collections.OrderedDict()
-
     for (example_index, example) in enumerate(all_examples):
         features = example_index_to_features[example_index]
 
         prelim_predictions = []
-        # keep track of the minimum score of null start+end of position 0
-        score_null = 1000000  # large and positive
+        score_null = 1000000
 
         for (feature_index, feature) in enumerate(features):
             result = unique_id_to_result[feature.unique_id]
@@ -851,11 +846,12 @@ def write_predictions_extended(all_examples, all_features, all_results,
 
             # Clean whitespace
             tok_text = tok_text.strip()
-            tok_text = " ".join(tok_text.split())
-            orig_text = " ".join(orig_tokens)
+            tok_text = "".join(tok_text.split())
+            orig_text = "".join(orig_tokens)
 
-            final_text = get_final_text(tok_text, orig_text,
-                                        tokenizer.do_lower_case)
+            # for now we dont postprocess final text first.
+            # final_text = get_final_text(tok_text, orig_text)
+            final_text = tok_text
 
             if final_text in seen_predictions:
                 continue
@@ -882,11 +878,16 @@ def write_predictions_extended(all_examples, all_features, all_results,
             if not best_non_null_entry:
                 best_non_null_entry = entry
 
+        # if no prediction, we take it as is_impossible with blank answer.
+        if not best_non_null_entry:
+            best_non_null_entry = nbest[0]
+
         probs = _compute_softmax(total_scores)
 
         nbest_json = []
         for (i, entry) in enumerate(nbest):
             output = collections.OrderedDict()
+            output["id"] = entry.qas_id
             output["text"] = entry.text
             output["probability"] = probs[i]
             output["start_log_prob"] = entry.start_log_prob
@@ -901,35 +902,34 @@ def write_predictions_extended(all_examples, all_features, all_results,
         # note(zhiliny): always predict best_non_null_entry
         # and the evaluation script will search for the best threshold
         all_predictions[example.qas_id] = best_non_null_entry.text
-
         all_nbest_json[example.qas_id] = nbest_json
 
     with open(output_prediction_file, "w") as writer:
-        writer.write(json.dumps(all_predictions, indent=4) + "\n")
+        write_data = json.dumps(all_predictions, indent=4, ensure_ascii=False)
+        writer.write(write_data + "\n")
 
     with open(output_nbest_file, "w") as writer:
-        writer.write(json.dumps(all_nbest_json, indent=4) + "\n")
+        write_data = json.dumps(all_nbest_json, indent=4, ensure_ascii=False)
+        writer.write(write_data + "\n")
 
-    if version_2_with_negative:
-        with open(output_null_log_odds_file, "w") as writer:
-            writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
+    with open(output_null_log_odds_file, "w") as writer:
+        write_data = json.dumps(scores_diff_json, indent=4, ensure_ascii=False)
+        writer.write(write_data + "\n")
 
-    with open(orig_data_file, "r", encoding='utf-8') as reader:
-        orig_data = json.load(reader)["data"]
+    # write JSON file CJRC submission format.
+    pred_answer = []
+    for k, v in all_predictions.items():
+        ans_format = {}
+        ans_format["id"] = k
+        ans_format["answer"] = v
+        pred_answer.append(ans_format)
 
-    qid_to_has_ans = make_qid_to_has_ans(orig_data)
-    has_ans_qids = [k for k, v in qid_to_has_ans.items() if v]
-    no_ans_qids = [k for k, v in qid_to_has_ans.items() if not v]
-    exact_raw, f1_raw = get_raw_scores(orig_data, all_predictions)
-    out_eval = {}
-
-    find_all_best_thresh_v2(out_eval, all_predictions, exact_raw, f1_raw,
-                            scores_diff_json, qid_to_has_ans)
-
-    return out_eval
+    with open("cjrc_result.json", "w") as writer:
+        write_data = json.dumps(pred_answer, indent=4, ensure_ascii=False)
+        writer.write(write_data + "\n")
 
 
-def get_final_text(pred_text, orig_text, do_lower_case):
+def get_final_text(pred_text, orig_text):
     """Project the tokenized prediction back to the original text."""
 
     # When we created the data, we kept track of the alignment between original
@@ -972,7 +972,7 @@ def get_final_text(pred_text, orig_text, do_lower_case):
     # and `pred_text`, and check if they are the same length. If they are
     # NOT the same length, the heuristic has failed. If they are the same
     # length, we assume the characters are one-to-one aligned.
-    tokenizer = BasicTokenizer(do_lower_case=do_lower_case)
+    tokenizer = BasicTokenizer()
 
     tok_text = " ".join(tokenizer.tokenize(orig_text))
 
