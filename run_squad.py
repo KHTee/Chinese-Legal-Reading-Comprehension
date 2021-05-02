@@ -40,11 +40,21 @@ from pytorch_transformers import (WEIGHTS_NAME, BertConfig,
                                   XLNetForQuestionAnswering, XLNetTokenizer)
 
 from pytorch_transformers import AdamW, WarmupLinearSchedule
+from transformers import AutoTokenizer, AutoModelForQuestionAnswering
 
 from utils_squad import load_and_cache_examples, RawResult, RawResultExtended, write_predictions, write_predictions_extended
 
 ALL_MODELS = sum((tuple(conf.pretrained_config_archive_map.keys()) \
                   for conf in (BertConfig, XLNetConfig, XLMConfig)), ())
+
+AUTO_MODEL_CLASSES = {
+    "bert-base-chinese": "bert-base-chinese",
+    "xlnet-chinese": "hfl/chinese-xlnet-base",
+    "ernie": "nghuyong/ernie-1.0",
+    "bert-chinese-wwm": "hfl/chinese-bert-wwm",
+}
+
+AVAILABLE_MODEL_TYPE = list(AUTO_MODEL_CLASSES.keys())
 
 FLAGS = flags.FLAGS
 
@@ -52,8 +62,9 @@ flags.DEFINE_string("train_file", None,
                     "Input file for training in SQuaD format.")
 flags.DEFINE_string("predict_file", None,
                     "Input file for evaluation in SQuaD format.")
-flags.DEFINE_enum("model_type", None, ["bert", "xlnet", "xlm"], "Model type")
-flags.DEFINE_string("model_name_or_path", None, "Pretrained models")
+flags.DEFINE_enum("model_type", None, AVAILABLE_MODEL_TYPE, "Model type")
+flags.DEFINE_string("model_name_or_path", None,
+                    "Pretrained models. Override model type")
 flags.DEFINE_string("output_dir", None, "Output directory.")
 flags.DEFINE_float(
     "null_score_diff_threshold", 0.0,
@@ -90,16 +101,16 @@ flags.DEFINE_integer("seed", 123, "Random seed.")
 flags.mark_flag_as_required('train_file')
 flags.mark_flag_as_required('predict_file')
 flags.mark_flag_as_required('model_type')
-flags.mark_flag_as_required('model_name_or_path')
+# flags.mark_flag_as_required('model_name_or_path')
 flags.mark_flag_as_required('output_dir')
 
 logger = logging.getLogger(__name__)
 
-MODEL_CLASSES = {
-    'bert': (BertConfig, BertForQuestionAnswering, BertTokenizer),
-    'xlnet': (XLNetConfig, XLNetForQuestionAnswering, XLNetTokenizer),
-    'xlm': (XLMConfig, XLMForQuestionAnswering, XLMTokenizer),
-}
+# MODEL_CLASSES = {
+#     'bert': (BertConfig, BertForQuestionAnswering, BertTokenizer),
+#     'xlnet': (XLNetConfig, XLNetForQuestionAnswering, XLNetTokenizer),
+#     'xlm': (XLMConfig, XLMForQuestionAnswering, XLMTokenizer),
+# }
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -187,7 +198,7 @@ def train(train_dataset, model, tokenizer):
                 'end_positions':
                     batch[4]
             }
-            if FLAGS.model_type in ['xlnet', 'xlm']:
+            if FLAGS.model_type in ["xlnet-chinese", 'xlnet', 'xlm']:
                 inputs.update({'cls_index': batch[5], 'p_mask': batch[6]})
             outputs = model(**inputs)
             loss = outputs[0]
@@ -275,14 +286,14 @@ def evaluate(model, tokenizer, prefix=""):
                     batch[2]  # XLM don't use segment_ids
             }
             example_indices = batch[3]
-            if FLAGS.model_type in ['xlnet', 'xlm']:
+            if FLAGS.model_type in ["xlnet-chinese", 'xlnet', 'xlm']:
                 inputs.update({'cls_index': batch[4], 'p_mask': batch[5]})
             outputs = model(**inputs)
 
         for i, example_index in enumerate(example_indices):
             eval_feature = features[example_index.item()]
             unique_id = eval_feature.unique_id
-            if FLAGS.model_type in ['xlnet', 'xlm']:
+            if FLAGS.model_type in ["xlnet-chinese", 'xlnet', 'xlm']:
                 # XLNet uses a more complex post-processing procedure
                 result = RawResultExtended(
                     unique_id=unique_id,
@@ -306,7 +317,7 @@ def evaluate(model, tokenizer, prefix=""):
     output_null_log_odds_file = os.path.join(FLAGS.output_dir,
                                              "null_odds_{}.json".format(prefix))
 
-    if FLAGS.model_type in ['xlnet', 'xlm']:
+    if FLAGS.model_type in ["xlnet-chinese", 'xlnet', 'xlm']:
         # XLNet uses a more complex post-processing procedure
         write_predictions_extended(examples, features, all_results,
                                    FLAGS.n_best_size, FLAGS.max_answer_length,
@@ -330,10 +341,9 @@ def evaluate(model, tokenizer, prefix=""):
 
 def main(argv):
     if os.path.exists(FLAGS.output_dir) and os.listdir(
-            FLAGS.output_dir
-    ) and FLAGS.do_train and not FLAGS.overwrite_output_dir:
+            FLAGS.output_dir) and FLAGS.do_train and not FLAGS.overwrite_output:
         raise ValueError(
-            "Output directory ({}) already exists and is not empty. Use --overwrite_output_dir to overcome."
+            "Output directory ({}) already exists and is not empty. Use --overwrite_output to overcome."
             .format(FLAGS.output_dir))
 
     # Setup logging
@@ -348,13 +358,22 @@ def main(argv):
     torch.manual_seed(FLAGS.seed)
 
     FLAGS.model_type = FLAGS.model_type.lower()
-    config_class, model_class, tokenizer_class = MODEL_CLASSES[FLAGS.model_type]
-    config = config_class.from_pretrained(FLAGS.model_name_or_path)
-    tokenizer = tokenizer_class.from_pretrained(FLAGS.model_name_or_path)
-    model = model_class.from_pretrained(
-        FLAGS.model_name_or_path,
-        from_tf=bool('.ckpt' in FLAGS.model_name_or_path),
-        config=config)
+    # config_class, model_class, tokenizer_class = MODEL_CLASSES[FLAGS.model_type]
+    # config = config_class.from_pretrained(FLAGS.model_name_or_path)
+    # tokenizer = tokenizer_class.from_pretrained(FLAGS.model_name_or_path)
+    # model = model_class.from_pretrained(
+    #     FLAGS.model_name_or_path,
+    #     from_tf=bool('.ckpt' in FLAGS.model_name_or_path),
+    #     config=config)
+    if FLAGS.model_name_or_path:
+        tokenizer = AutoTokenizer.from_pretrained(FLAGS.model_name_or_path)
+        model = AutoModelForQuestionAnswering.from_pretrained(
+            FLAGS.model_name_or_path)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(
+            AUTO_MODEL_CLASSES[FLAGS.model_type])
+        model = AutoModelForQuestionAnswering.from_pretrained(
+            AUTO_MODEL_CLASSES[FLAGS.model_type])
 
     model.to(DEVICE)
 

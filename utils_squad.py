@@ -462,13 +462,13 @@ def _check_is_max_context(doc_spans, cur_span_index, position):
 
 def load_and_cache_examples(input_file, tokenizer, is_training=True):
     """Get examples and features. Can either create new or load from cache."""
-    model_name = list(filter(None, FLAGS.model_name_or_path.split('/'))).pop()
+    # model_name = list(filter(None, FLAGS.model_name_or_path.split('/'))).pop()
     features_cache = os.path.splitext(
         input_file)[0] + "_cache_features_{}_seq{}_stride{}".format(
-            model_name, str(FLAGS.max_seq_length), str(FLAGS.doc_stride))
+            FLAGS.model_type, str(FLAGS.max_seq_length), str(FLAGS.doc_stride))
     examples_cache = os.path.splitext(
         input_file)[0] + "_cache_examples_{}_seq{}_stride{}".format(
-            model_name, str(FLAGS.max_seq_length), str(FLAGS.doc_stride))
+            FLAGS.model_type, str(FLAGS.max_seq_length), str(FLAGS.doc_stride))
 
     if os.path.exists(examples_cache) and not FLAGS.overwrite_cache:
         logger.info("Loading examples from cached file %s", examples_cache)
