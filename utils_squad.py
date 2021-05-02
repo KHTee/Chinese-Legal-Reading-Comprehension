@@ -1,8 +1,9 @@
 """ Load SQuAD dataset. """
 
+import os
 import json
-import logging
 import math
+import logging
 import collections
 
 from absl import flags, app
@@ -459,22 +460,40 @@ def _check_is_max_context(doc_spans, cur_span_index, position):
     return cur_span_index == best_span_index
 
 
-def load_and_cache_examples(input_file,
-                            tokenizer,
-                            is_training=True,
-                            output_examples=False):
-    """Load data features from cache or dataset file"""
+def load_and_cache_examples(input_file, tokenizer, is_training=True):
+    """Get examples and features. Can either create new or load from cache."""
+    model_name = list(filter(None, FLAGS.model_name_or_path.split('/'))).pop()
+    features_cache = os.path.splitext(
+        input_file)[0] + "_cache_features_{}_seq{}_stride{}".format(
+            model_name, str(FLAGS.max_seq_length), str(FLAGS.doc_stride))
+    examples_cache = os.path.splitext(
+        input_file)[0] + "_cache_examples_{}_seq{}_stride{}".format(
+            model_name, str(FLAGS.max_seq_length), str(FLAGS.doc_stride))
 
-    logger.info("Creating features from dataset file at %s", input_file)
-    examples = read_squad_examples(input_file=input_file,
-                                   is_training=is_training)
-    features = convert_examples_to_features(
-        examples=examples,
-        tokenizer=tokenizer,
-        max_seq_length=FLAGS.max_seq_length,
-        doc_stride=FLAGS.doc_stride,
-        max_query_length=FLAGS.max_query_length,
-        is_training=is_training)
+    if os.path.exists(examples_cache) and not FLAGS.overwrite_cache:
+        logger.info("Loading examples from cached file %s", examples_cache)
+        examples = torch.load(examples_cache)
+    else:
+        logger.info("Creating examples from dataset file at %s", input_file)
+        examples = read_squad_examples(input_file=input_file,
+                                       is_training=is_training)
+        logger.info("Saving examples into cached file %s", examples_cache)
+        torch.save(examples, examples_cache)
+
+    if os.path.exists(features_cache) and not FLAGS.overwrite_cache:
+        logger.info("Loading features from cached file %s", features_cache)
+        features = torch.load(features_cache)
+    else:
+        logger.info("Creating features from dataset file at %s", input_file)
+        features = convert_examples_to_features(
+            examples=examples,
+            tokenizer=tokenizer,
+            max_seq_length=FLAGS.max_seq_length,
+            doc_stride=FLAGS.doc_stride,
+            max_query_length=FLAGS.max_query_length,
+            is_training=is_training)
+        logger.info("Saving features into cached file %s", features_cache)
+        torch.save(features, features_cache)
 
     # Convert to Tensors and build dataset
     all_input_ids = torch.tensor([f.input_ids for f in features],
@@ -500,9 +519,7 @@ def load_and_cache_examples(input_file,
         dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
                                 all_example_index, all_cls_index, all_p_mask)
 
-    if output_examples:
-        return dataset, examples, features
-    return dataset
+    return dataset, examples, features
 
 
 RawResult = collections.namedtuple("RawResult",

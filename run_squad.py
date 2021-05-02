@@ -83,8 +83,8 @@ flags.DEFINE_integer("max_answer_length", 30, "Max length of answer.")
 flags.DEFINE_integer("logging_steps", 50, "Log every X updates steps.")
 flags.DEFINE_integer("save_steps", 50, "Save checkpoint every X updates steps.")
 flags.DEFINE_boolean("eval_all_checkpoints", False, "Evaluate all checkpoints.")
-flags.DEFINE_boolean("overwrite_output_dir", False,
-                     "Overwrite output directory.")
+flags.DEFINE_boolean("overwrite_output", False, "Overwrite output.")
+flags.DEFINE_boolean("overwrite_cache", False, "Overwrite cache.")
 flags.DEFINE_integer("seed", 123, "Random seed.")
 
 flags.mark_flag_as_required('train_file')
@@ -245,8 +245,7 @@ def train(train_dataset, model, tokenizer):
 def evaluate(model, tokenizer, prefix=""):
     dataset, examples, features = load_and_cache_examples(FLAGS.predict_file,
                                                           tokenizer,
-                                                          is_training=False,
-                                                          output_examples=True)
+                                                          is_training=False)
 
     if not os.path.exists(FLAGS.output_dir):
         os.makedirs(FLAGS.output_dir)
@@ -363,10 +362,9 @@ def main(argv):
 
     # Training
     if FLAGS.do_train:
-        train_dataset = load_and_cache_examples(FLAGS.train_file,
-                                                tokenizer,
-                                                is_training=True,
-                                                output_examples=False)
+        train_dataset, _, _ = load_and_cache_examples(FLAGS.train_file,
+                                                      tokenizer,
+                                                      is_training=True)
         global_step, tr_loss = train(train_dataset, model, tokenizer)
         logger.info(" global_step = %s, average loss = %s", global_step,
                     tr_loss)
