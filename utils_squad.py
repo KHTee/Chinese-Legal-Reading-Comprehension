@@ -1,4 +1,4 @@
-""" Load SQuAD dataset. """
+""" Utils """
 
 import os
 import json
@@ -6,22 +6,18 @@ import math
 import logging
 import collections
 
-from absl import flags, app
 import torch
-from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
-                              TensorDataset)
+from absl import flags, app
+from torch.utils.data import TensorDataset
 from pytorch_transformers.tokenization_bert import BasicTokenizer, whitespace_tokenize
 
-# Required by XLNet evaluation method to compute optimal threshold (see write_predictions_extended() method)
-# from utils_squad_evaluate import find_all_best_thresh_v2, make_qid_to_has_ans, get_raw_scores
+# for handler in logging.root.handlers[:]:
+#     logging.root.removeHandler(handler)
 
-for handler in logging.root.handlers[:]:
-    logging.root.removeHandler(handler)
-
-logging.basicConfig(filename='app.log',
-                    filemode='w',
-                    format='%(name)s - %(levelname)s - %(message)s',
-                    level=logging.INFO)
+# logging.basicConfig(filename='app.log',
+#                     filemode='w',
+#                     format='%(name)s - %(levelname)s - %(message)s',
+#                     level=logging.INFO)
 
 logger = logging.getLogger(__name__)
 
@@ -109,11 +105,6 @@ def read_squad_examples(input_file, is_training):
     """Read a SQuAD json file into a list of SquadExample."""
     with open(input_file, "r", encoding='utf-8') as reader:
         input_data = json.load(reader)["data"]
-
-    def is_whitespace(c):
-        if c == " " or c == "\t" or c == "\r" or c == "\n" or ord(c) == 0x202F:
-            return True
-        return False
 
     examples = []
     for entry in input_data:
@@ -346,8 +337,8 @@ def convert_examples_to_features(examples,
                 ## todo - need to cater for YES/NO
                 doc_start = doc_span.start
                 doc_end = doc_span.start + doc_span.length - 1
-                if not (tok_start_position >= doc_start and
-                        tok_end_position <= doc_end):
+                if not (tok_start_position >= doc_start
+                        and tok_end_position <= doc_end):
                     start_position = 0
                     end_position = 0
                     span_is_impossible = True
@@ -362,7 +353,7 @@ def convert_examples_to_features(examples,
                 doc_start = -1
                 doc_offset = -1
 
-            if example_index < 20:
+            if (example_index < 20) and (FLAGS.verbose):
                 # if yes_no_ques:
                 logger.info("*** Example ***")
                 # logger.info("tok_start_position: %s" % (tok_start_position))
@@ -464,11 +455,9 @@ def load_and_cache_examples(input_file, tokenizer, is_training=True):
     """Get examples and features. Can either create new or load from cache."""
     # model_name = list(filter(None, FLAGS.model_name_or_path.split('/'))).pop()
     features_cache = os.path.splitext(
-        input_file)[0] + "_cache_features_{}_seq{}_stride{}".format(
-            FLAGS.model_type, str(FLAGS.max_seq_length), str(FLAGS.doc_stride))
+        input_file)[0] + "_cache_features_{}".format(FLAGS.model_type)
     examples_cache = os.path.splitext(
-        input_file)[0] + "_cache_examples_{}_seq{}_stride{}".format(
-            FLAGS.model_type, str(FLAGS.max_seq_length), str(FLAGS.doc_stride))
+        input_file)[0] + "_cache_examples_{}".format(FLAGS.model_type)
 
     if os.path.exists(examples_cache) and not FLAGS.overwrite_cache:
         logger.info("Loading examples from cached file %s", examples_cache)
@@ -558,9 +547,9 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
         prelim_predictions = []
         score_null = 1000000
-        min_null_feature_index = 0  # the paragraph slice with min null score
-        null_start_logit = 0  # the start logit at the slice with min null score
-        null_end_logit = 0  # the end logit at the slice with min null score
+        min_null_feature_index = 0    # the paragraph slice with min null score
+        null_start_logit = 0    # the start logit at the slice with min null score
+        null_end_logit = 0    # the end logit at the slice with min null score
 
         for (feature_index, feature) in enumerate(features):
             result = unique_id_to_result[feature.unique_id]
@@ -619,7 +608,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                 break
             feature = features[pred.feature_index]
             qas_id = feature.qas_id
-            if pred.start_index > 0:  # this is a non-null prediction
+            if pred.start_index > 0:    # this is a non-null prediction
                 tok_tokens = feature.tokens[pred.start_index:(pred.end_index +
                                                               1)]
                 orig_doc_start = feature.token_to_orig_map[pred.start_index]
@@ -638,8 +627,8 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                 orig_text = "".join(orig_tokens)
 
                 # for now we dont postprocess final text first.
-                # final_text = get_final_text(tok_text, orig_text)
-                final_text = tok_text
+                final_text = get_final_text(tok_text, orig_text)
+                # final_text = tok_text
 
                 if final_text in seen_predictions:
                     continue
@@ -720,9 +709,9 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
         all_nbest_json[example.qas_id] = nbest_json
 
-    with open(output_prediction_file, "w") as writer:
-        write_data = json.dumps(all_predictions, indent=4, ensure_ascii=False)
-        writer.write(write_data + "\n")
+    # with open(output_prediction_file, "w") as writer:
+    #     write_data = json.dumps(all_predictions, indent=4, ensure_ascii=False)
+    #     writer.write(write_data + "\n")
 
     with open(output_nbest_file, "w") as writer:
         write_data = json.dumps(all_nbest_json, indent=4, ensure_ascii=False)
@@ -740,7 +729,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
         ans_format["answer"] = v
         pred_answer.append(ans_format)
 
-    with open("cjrc_result.json", "w") as writer:
+    with open(output_prediction_file, "w+") as writer:
         write_data = json.dumps(pred_answer, indent=4, ensure_ascii=False)
         writer.write(write_data + "\n")
 
@@ -978,7 +967,7 @@ def get_final_text(pred_text, orig_text):
         ns_chars = []
         ns_to_s_map = collections.OrderedDict()
         for (i, c) in enumerate(text):
-            if c == " ":
+            if is_whitespace(c):
                 continue
             ns_to_s_map[len(ns_chars)] = i
             ns_chars.append(c)
@@ -991,12 +980,13 @@ def get_final_text(pred_text, orig_text):
     # length, we assume the characters are one-to-one aligned.
     tokenizer = BasicTokenizer()
 
-    tok_text = " ".join(tokenizer.tokenize(orig_text))
+    tok_text = "".join(tokenizer.tokenize(orig_text))
 
     start_position = tok_text.find(pred_text)
     if start_position == -1:
-        logger.info("Unable to find text: '%s' in '%s'" %
-                    (pred_text, orig_text))
+        if FLAGS.verbose:
+            logger.info("Unable to find text: '%s' in '%s'" %
+                        (pred_text, orig_text))
         return orig_text
     end_position = start_position + len(pred_text) - 1
 
@@ -1004,8 +994,9 @@ def get_final_text(pred_text, orig_text):
     (tok_ns_text, tok_ns_to_s_map) = _strip_spaces(tok_text)
 
     if len(orig_ns_text) != len(tok_ns_text):
-        logger.info("Length not equal after stripping spaces: '%s' vs '%s'",
-                    orig_ns_text, tok_ns_text)
+        if FLAGS.verbose:
+            logger.info("Length not equal after stripping spaces: '%s' vs '%s'",
+                        orig_ns_text, tok_ns_text)
         return orig_text
 
     # We then project the characters in `pred_text` back to `orig_text` using
@@ -1021,7 +1012,8 @@ def get_final_text(pred_text, orig_text):
             orig_start_position = orig_ns_to_s_map[ns_start_position]
 
     if orig_start_position is None:
-        logger.info("Couldn't map start position")
+        if FLAGS.verbose:
+            logger.info("Couldn't map start position")
         return orig_text
 
     orig_end_position = None
@@ -1031,7 +1023,8 @@ def get_final_text(pred_text, orig_text):
             orig_end_position = orig_ns_to_s_map[ns_end_position]
 
     if orig_end_position is None:
-        logger.info("Couldn't map end position")
+        if FLAGS.verbose:
+            logger.info("Couldn't map end position")
         return orig_text
 
     output_text = orig_text[orig_start_position:(orig_end_position + 1)]
@@ -1073,3 +1066,9 @@ def _compute_softmax(scores):
     for score in exp_scores:
         probs.append(score / total_sum)
     return probs
+
+
+def is_whitespace(c):
+    if c == " " or c == "\t" or c == "\r" or c == "\n" or ord(c) == 0x202F:
+        return True
+    return False

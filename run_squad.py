@@ -13,39 +13,34 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Finetuning the library models for question-answering on SQuAD (Bert, XLM, XLNet)."""
+""" Finetuning the library models for question-answering."""
 
-from __future__ import absolute_import, division, print_function
-
-import argparse
-import logging
 import os
 import random
-import glob
+import logging
 
-from absl import flags, app
-import numpy as np
 import torch
-from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
-                              TensorDataset)
-from torch.utils.data.distributed import DistributedSampler
+import numpy as np
+from absl import flags, app
 from tqdm import tqdm, trange
-
 from tensorboardX import SummaryWriter
-
-from pytorch_transformers import (WEIGHTS_NAME, BertConfig,
-                                  BertForQuestionAnswering, BertTokenizer,
-                                  XLMConfig, XLMForQuestionAnswering,
-                                  XLMTokenizer, XLNetConfig,
-                                  XLNetForQuestionAnswering, XLNetTokenizer)
-
 from pytorch_transformers import AdamW, WarmupLinearSchedule
 from transformers import AutoTokenizer, AutoModelForQuestionAnswering
+from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler)
 
 from utils_squad import load_and_cache_examples, RawResult, RawResultExtended, write_predictions, write_predictions_extended
+from evaluate import CJRCEvaluator
 
-ALL_MODELS = sum((tuple(conf.pretrained_config_archive_map.keys()) \
-                  for conf in (BertConfig, XLNetConfig, XLMConfig)), ())
+# from pytorch_transformers import (WEIGHTS_NAME, BertConfig,
+#                                   BertForQuestionAnswering, BertTokenizer,
+#                                   XLMConfig, XLMForQuestionAnswering,
+#                                   XLMTokenizer, XLNetConfig,
+#                                   XLNetForQuestionAnswering, XLNetTokenizer)
+
+# ALL_MODELS = sum((tuple(conf.pretrained_config_archive_map.keys()) \
+#                   for conf in (BertConfig, XLNetConfig, XLMConfig)), ())
+
+logger = logging.getLogger(__name__)
 
 AUTO_MODEL_CLASSES = {
     "bert-base-chinese": "bert-base-chinese",
@@ -69,14 +64,14 @@ flags.DEFINE_string("output_dir", None, "Output directory.")
 flags.DEFINE_float(
     "null_score_diff_threshold", 0.0,
     "If null_score - best_non_null is greater than the threshold predict null.")
-flags.DEFINE_integer("max_seq_length", 384, "Max sequence length.")
+flags.DEFINE_integer("max_seq_length", 512, "Max sequence length.")
 flags.DEFINE_integer("doc_stride", 128,
                      "Doc stride for splitting long documnets.")
 flags.DEFINE_integer("max_query_length", 64, "Max question length.")
 flags.DEFINE_boolean("do_train", False, "Run training")
 flags.DEFINE_boolean("do_eval", False, "Run evaluation")
-flags.DEFINE_boolean("evaluate_during_training", False,
-                     "Run eval during training at each logging step.")
+# flags.DEFINE_boolean("evaluate_during_training", False,
+#                      "Run eval during training at each logging step.")
 flags.DEFINE_integer("batch_size", 4, "Train batch size.")
 flags.DEFINE_integer("eval_batch_size", 4, "Eval batch size.")
 flags.DEFINE_float("learning_rate", 1e-4, "Learning rate.")
@@ -86,25 +81,25 @@ flags.DEFINE_integer(
 flags.DEFINE_float("weight_decay", 0.0, "Weight decay.")
 flags.DEFINE_float("adam_epsilon", 1e-8, "Epsilon for Adam optim.")
 flags.DEFINE_float("max_grad_norm", 1.0, "Gradient clipping.")
-flags.DEFINE_integer("num_train_epochs", 3, "Number of epoch.")
+flags.DEFINE_integer("num_epoch", 3, "Number of epoch.")
 flags.DEFINE_integer("max_steps", -1, "Max steps (overide epoch).")
 flags.DEFINE_integer("warmup_steps", 0, "Linear warmup over warmup_steps.")
 flags.DEFINE_integer("n_best_size", 20, "Output n best predictions")
 flags.DEFINE_integer("max_answer_length", 30, "Max length of answer.")
-flags.DEFINE_integer("logging_steps", 50, "Log every X updates steps.")
-flags.DEFINE_integer("save_steps", 50, "Save checkpoint every X updates steps.")
-flags.DEFINE_boolean("eval_all_checkpoints", False, "Evaluate all checkpoints.")
+flags.DEFINE_integer("logging_steps", 0, "Log every X steps.")
+flags.DEFINE_integer("eval_steps", 0, "Run eval every X steps.")
+flags.DEFINE_integer("save_steps", 0, "Save checkpoint every X steps.")
+# flags.DEFINE_boolean("eval_all_checkpoints", False, "Evaluate all checkpoints.")
 flags.DEFINE_boolean("overwrite_output", False, "Overwrite output.")
 flags.DEFINE_boolean("overwrite_cache", False, "Overwrite cache.")
 flags.DEFINE_integer("seed", 123, "Random seed.")
+flags.DEFINE_boolean("verbose", False, "Save verbose output.")
 
 flags.mark_flag_as_required('train_file')
 flags.mark_flag_as_required('predict_file')
 flags.mark_flag_as_required('model_type')
 # flags.mark_flag_as_required('model_name_or_path')
 flags.mark_flag_as_required('output_dir')
-
-logger = logging.getLogger(__name__)
 
 # MODEL_CLASSES = {
 #     'bert': (BertConfig, BertForQuestionAnswering, BertTokenizer),
@@ -131,12 +126,11 @@ def train(train_dataset, model, tokenizer):
 
     if FLAGS.max_steps > 0:
         t_total = FLAGS.max_steps
-        FLAGS.num_train_epochs = FLAGS.max_steps // (
+        FLAGS.num_epoch = FLAGS.max_steps // (
             len(train_dataloader) // FLAGS.gradient_accumulation_steps) + 1
     else:
-        t_total = len(
-            train_dataloader
-        ) // FLAGS.gradient_accumulation_steps * FLAGS.num_train_epochs
+        t_total = len(train_dataloader
+                     ) // FLAGS.gradient_accumulation_steps * FLAGS.num_epoch
 
     # Prepare optimizer and schedule (linear warmup and decay)
     no_decay = ['bias', 'LayerNorm.weight']
@@ -163,7 +157,7 @@ def train(train_dataset, model, tokenizer):
     # Train!
     logger.info("***** Running training *****")
     logger.info("  Num examples = %d", len(train_dataset))
-    logger.info("  Num Epochs = %d", FLAGS.num_train_epochs)
+    logger.info("  Num Epochs = %d", FLAGS.num_epoch)
     logger.info("  Instantaneous batch size per GPU = %d", FLAGS.batch_size)
     logger.info("  Total train batch size = %d",
                 FLAGS.batch_size * FLAGS.gradient_accumulation_steps)
@@ -174,12 +168,14 @@ def train(train_dataset, model, tokenizer):
     global_step = 0
     tr_loss, logging_loss = 0.0, 0.0
     model.zero_grad()
-    train_iterator = trange(int(FLAGS.num_train_epochs),
-                            desc="Epoch",
-                            disable=False)
+    train_iterator = trange(int(FLAGS.num_epoch), desc="Epoch", disable=False)
     random.seed(FLAGS.seed)
     np.random.seed(FLAGS.seed)
     torch.manual_seed(FLAGS.seed)
+
+    best_em = 0.0
+    best_f1 = 0.0
+    best_loss = 99.9
 
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=False)
@@ -213,33 +209,64 @@ def train(train_dataset, model, tokenizer):
             tr_loss += loss.item()
             if (step + 1) % FLAGS.gradient_accumulation_steps == 0:
                 optimizer.step()
-                scheduler.step()  # Update learning rate schedule
+                scheduler.step()    # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
 
-                if FLAGS.logging_steps > 0 and global_step % FLAGS.logging_steps == 0:
+                if (FLAGS.logging_steps > 0) and (global_step %
+                                                  FLAGS.logging_steps == 0):
                     # Log metrics
-                    if FLAGS.evaluate_during_training:
-                        evaluate(model, tokenizer)
-                        # results = evaluate(model, tokenizer)
-                        # for key, value in results.items():
-                        #     tb_writer.add_scalar('eval_{}'.format(key), value,
-                        #                          global_step)
+                    if (FLAGS.eval_steps > 0) and (global_step %
+                                                   FLAGS.eval_steps == 0):
+                        results = evaluate(model, tokenizer)
+                        em_overall = results["overall"]["em"]
+                        f1_overall = results["overall"]["f1"]
+                        tb_writer.add_scalar('eval_{}'.format("em"), em_overall,
+                                             global_step)
+                        tb_writer.add_scalar('eval_{}'.format("f1"), f1_overall,
+                                             global_step)
                     tb_writer.add_scalar('lr',
                                          scheduler.get_lr()[0], global_step)
                     tb_writer.add_scalar('loss', (tr_loss - logging_loss) /
                                          FLAGS.logging_steps, global_step)
                     logging_loss = tr_loss
 
-                if FLAGS.save_steps > 0 and global_step % FLAGS.save_steps == 0:
-                    # Save model checkpoint
-                    output_dir = os.path.join(
-                        FLAGS.output_dir, 'checkpoint-{}'.format(global_step))
-                    if not os.path.exists(output_dir):
-                        os.makedirs(output_dir)
-                    model.save_pretrained(output_dir)
-                    tokenizer.save_pretrained(output_dir)
-                    logger.info("Saving model checkpoint to %s", output_dir)
+                    # save models for best em, best f1 and best loss.
+                    if (FLAGS.save_steps > 0) and (global_step %
+                                                   FLAGS.save_steps == 0):
+                        if em_overall > best_em:
+                            output_dir = os.path.join(FLAGS.output_dir,
+                                                      "best_em")
+                            if not os.path.exists(output_dir):
+                                os.makedirs(output_dir)
+                            model.save_pretrained(output_dir)
+                            tokenizer.save_pretrained(output_dir)
+
+                        if f1_overall > best_f1:
+                            output_dir = os.path.join(FLAGS.output_dir,
+                                                      "best_f1")
+                            if not os.path.exists(output_dir):
+                                os.makedirs(output_dir)
+                            model.save_pretrained(output_dir)
+                            tokenizer.save_pretrained(output_dir)
+
+                        if logging_loss < best_loss:
+                            output_dir = os.path.join(FLAGS.output_dir,
+                                                      "best_loss")
+                            if not os.path.exists(output_dir):
+                                os.makedirs(output_dir)
+                            model.save_pretrained(output_dir)
+                            tokenizer.save_pretrained(output_dir)
+
+                # if FLAGS.save_steps > 0 and global_step % FLAGS.save_steps == 0:
+                #     # Save model checkpoint
+                #     output_dir = os.path.join(
+                #         FLAGS.output_dir, 'checkpoint-{}'.format(global_step))
+                #     if not os.path.exists(output_dir):
+                #         os.makedirs(output_dir)
+                #     model.save_pretrained(output_dir)
+                #     tokenizer.save_pretrained(output_dir)
+                #     logger.info("Saving model checkpoint to %s", output_dir)
 
             if FLAGS.max_steps > 0 and global_step > FLAGS.max_steps:
                 epoch_iterator.close()
@@ -283,7 +310,7 @@ def evaluate(model, tokenizer, prefix=""):
                     batch[1],
                 'token_type_ids':
                     None if FLAGS.model_type == 'xlm' else
-                    batch[2]  # XLM don't use segment_ids
+                    batch[2]    # XLM don't use segment_ids
             }
             example_indices = batch[3]
             if FLAGS.model_type in ["xlnet-chinese", 'xlnet', 'xlm']:
@@ -331,15 +358,26 @@ def evaluate(model, tokenizer, prefix=""):
                           output_nbest_file, output_null_log_odds_file,
                           FLAGS.null_score_diff_threshold)
 
-    # # Evaluate with the official SQuAD script
-    # evaluate_options = EVAL_OPTS(data_file=FLAGS.predict_file,
-    #                              pred_file=output_prediction_file,
-    #                              na_prob_file=output_null_log_odds_file)
-    # results = evaluate_on_squad(evaluate_options)
-    # return results
+    # Evaluate with CJRC competition evaluation script
+    evaluator = CJRCEvaluator(FLAGS.predict_file)
+
+    with open(output_prediction_file) as f:
+        pred_data = CJRCEvaluator.preds_to_dict(output_prediction_file)
+        results = evaluator.model_performance(pred_data)
+    logger.info("  Eval result =", results)
+
+    return results
 
 
 def main(argv):
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+
+    logging.basicConfig(filename="train.log" if FLAGS.do_train else "eval.log",
+                        filemode='w',
+                        format='%(name)s - %(levelname)s - %(message)s',
+                        level=logging.INFO)
+
     if os.path.exists(FLAGS.output_dir) and os.listdir(
             FLAGS.output_dir) and FLAGS.do_train and not FLAGS.overwrite_output:
         raise ValueError(
@@ -398,12 +436,9 @@ def main(argv):
 
         # # torch.save(FLAGS, os.path.join(FLAGS.output_dir, 'training_FLAGS.bin'))
 
-        # model = model_class.from_pretrained(FLAGS.output_dir)
-        # tokenizer = tokenizer_class.from_pretrained(FLAGS.output_dir)
-        # model.to(DEVICE)
-
     if FLAGS.do_eval:
-        evaluate(model, tokenizer, prefix="")
+        results = evaluate(model, tokenizer, prefix=FLAGS.model_type)
+        print(results)
 
     # # Evaluation - we can ask to evaluate all the checkpoints (sub-directories) in a directory
     # results = {}
