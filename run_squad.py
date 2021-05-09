@@ -47,6 +47,7 @@ AUTO_MODEL_CLASSES = {
     "xlnet-chinese": "hfl/chinese-xlnet-base",
     "ernie": "nghuyong/ernie-1.0",
     "bert-chinese-wwm": "hfl/chinese-bert-wwm",
+    "roberta": "hfl/chinese-roberta-wwm-ext",
 }
 
 AVAILABLE_MODEL_TYPE = list(AUTO_MODEL_CLASSES.keys())
@@ -81,10 +82,10 @@ flags.DEFINE_integer(
 flags.DEFINE_float("weight_decay", 0.0, "Weight decay.")
 flags.DEFINE_float("adam_epsilon", 1e-8, "Epsilon for Adam optim.")
 flags.DEFINE_float("max_grad_norm", 1.0, "Gradient clipping.")
-flags.DEFINE_integer("num_epoch", 3, "Number of epoch.")
+flags.DEFINE_integer("num_epoch", 1, "Number of epoch.")
 flags.DEFINE_integer("max_steps", -1, "Max steps (overide epoch).")
 flags.DEFINE_integer("warmup_steps", 0, "Linear warmup over warmup_steps.")
-flags.DEFINE_integer("n_best_size", 20, "Output n best predictions")
+flags.DEFINE_integer("n_best_size", 5, "Output n best predictions")
 flags.DEFINE_integer("max_answer_length", 30, "Max length of answer.")
 flags.DEFINE_integer("logging_steps", 0, "Log every X steps.")
 flags.DEFINE_integer("eval_steps", 0, "Run eval every X steps.")
@@ -361,10 +362,12 @@ def evaluate(model, tokenizer, prefix=""):
     # Evaluate with CJRC competition evaluation script
     evaluator = CJRCEvaluator(FLAGS.predict_file)
 
-    with open(output_prediction_file) as f:
-        pred_data = CJRCEvaluator.preds_to_dict(output_prediction_file)
-        results = evaluator.model_performance(pred_data)
+    # with open(output_prediction_file) as f:
+    pred_data = CJRCEvaluator.preds_to_dict(output_prediction_file)
+    results = evaluator.model_performance(pred_data)
+    
     logger.info("  Eval result =", results)
+    print(results)
 
     return results
 
@@ -438,7 +441,7 @@ def main(argv):
 
     if FLAGS.do_eval:
         results = evaluate(model, tokenizer, prefix=FLAGS.model_type)
-        print(results)
+        logger.info(results)
 
     # # Evaluation - we can ask to evaluate all the checkpoints (sub-directories) in a directory
     # results = {}
