@@ -11,14 +11,6 @@ from absl import flags, app
 from torch.utils.data import TensorDataset
 from pytorch_transformers.tokenization_bert import BasicTokenizer, whitespace_tokenize
 
-# for handler in logging.root.handlers[:]:
-#     logging.root.removeHandler(handler)
-
-# logging.basicConfig(filename='app.log',
-#                     filemode='w',
-#                     format='%(name)s - %(levelname)s - %(message)s',
-#                     level=logging.INFO)
-
 logger = logging.getLogger(__name__)
 
 FLAGS = flags.FLAGS
@@ -119,6 +111,8 @@ def read_squad_examples(input_file, is_training):
                     doc_tokens.append(c)
                 char_to_word_offset.append(len(doc_tokens) - 1)
 
+            doc_tokens += ["[YES]", "[NO]"]
+
             for qa in paragraph["qas"]:
                 qas_id = qa["id"]
                 question_text = qa["question"]
@@ -134,45 +128,93 @@ def read_squad_examples(input_file, is_training):
                 orig_answer_text = None
                 is_impossible = False
 
+                # if is_training:
+                #     is_impossible = qa["is_impossible"]
+
+                #     if (len(qa["answers"]) != 1) and (not is_impossible):
+                #         raise ValueError(
+                #             "For training, each question should have exactly 1 answer."
+                #         )
+
+                #     if (not is_impossible) and (orig_answer_text not in ["YES", "NO"]):
+                #         answer = qa["answers"][0]
+                #         orig_answer_text = answer["text"]
+                #         answer_offset = answer["answer_start"]
+                #         answer_length = len(orig_answer_text)
+                #         start_position = char_to_word_offset[answer_offset]
+                #         end_position = char_to_word_offset[answer_offset +
+                #                                            answer_length - 1]
+
+                #         # Only add answers where the text can be exactly recovered from the document.
+                #         actual_text = "".join(
+                #             doc_tokens[start_position:(end_position + 1)])
+                #         cleaned_answer_text = "".join(
+                #             whitespace_tokenize(orig_answer_text))
+                #         if actual_text.find(
+                #                 cleaned_answer_text
+                #         ) == -1 and cleaned_answer_text not in ["YES", "NO"]:
+                #             logger.warning(
+                #                 "Could not find answer: '%s' vs. '%s'",
+                #                 actual_text, cleaned_answer_text)
+                #             logger.warning(
+                #                 doc_tokens[start_position:(end_position + 1)])
+                #             continue
+                #     else:
+                #         start_position = -1
+                #         end_position = -1
+
+                #         # set YES/NO position to -1. May change later.
+                #         if len(qa["answers"]) > 0:
+                #             orig_answer_text = qa["answers"][0]["text"]
+
                 if is_training:
                     is_impossible = qa["is_impossible"]
 
                     if (len(qa["answers"]) != 1) and (not is_impossible):
-                        raise ValueError(
-                            "For training, each question should have exactly 1 answer."
-                        )
+                        raise ValueError("Each ques should have only 1 ans.")
 
-                    if (not is_impossible) and (qa["answers"][0]["text"]
-                                                not in ["YES", "NO"]):
+                    if not is_impossible:
                         answer = qa["answers"][0]
                         orig_answer_text = answer["text"]
                         answer_offset = answer["answer_start"]
                         answer_length = len(orig_answer_text)
-                        start_position = char_to_word_offset[answer_offset]
-                        end_position = char_to_word_offset[answer_offset +
-                                                           answer_length - 1]
+                        if orig_answer_text not in ["YES", "NO"]:
+                            start_position = char_to_word_offset[answer_offset]
+                            end_position = char_to_word_offset[answer_offset +
+                                                               answer_length -
+                                                               1]
 
-                        # Only add answers where the text can be exactly recovered from the document.
-                        actual_text = "".join(
-                            doc_tokens[start_position:(end_position + 1)])
-                        cleaned_answer_text = "".join(
-                            whitespace_tokenize(orig_answer_text))
-                        if actual_text.find(
-                                cleaned_answer_text
-                        ) == -1 and cleaned_answer_text not in ["YES", "NO"]:
-                            logger.warning(
-                                "Could not find answer: '%s' vs. '%s'",
-                                actual_text, cleaned_answer_text)
-                            logger.warning(
+                            # Only add answers where the text can be exactly recovered from the document.
+                            actual_text = "".join(
                                 doc_tokens[start_position:(end_position + 1)])
-                            continue
+                            cleaned_answer_text = "".join(
+                                whitespace_tokenize(orig_answer_text))
+                            if actual_text.find(
+                                    cleaned_answer_text
+                            ) == -1 and cleaned_answer_text not in [
+                                    "YES", "NO"
+                            ]:
+                                logger.warning(
+                                    "Could not find answer: '%s' vs. '%s'",
+                                    actual_text, cleaned_answer_text)
+                                logger.warning(
+                                    doc_tokens[start_position:(end_position +
+                                                               1)])
+                                continue
+                        else:
+                            if orig_answer_text == "YES":
+                                orig_answer_text = "[YES]"
+                                start_position = len(doc_tokens) - 2
+                                end_position = len(doc_tokens) - 2
+
+                            if orig_answer_text == "NO":
+                                orig_answer_text = "[NO]"
+                                start_position = len(doc_tokens) - 1
+                                end_position = len(doc_tokens) - 1
+
                     else:
                         start_position = -1
                         end_position = -1
-
-                        # set YES/NO position to -1. May change later.
-                        if len(qa["answers"]) > 0:
-                            orig_answer_text = qa["answers"][0]["text"]
 
                 example = SquadExample(qas_id=qas_id,
                                        question_text=question_text,
@@ -218,10 +260,12 @@ def convert_examples_to_features(examples,
         all_doc_tokens = []
         for (i, token) in enumerate(example.doc_tokens):
             orig_to_tok_index.append(len(all_doc_tokens))
-            sub_tokens = tokenizer.tokenize(token)
-            for sub_token in sub_tokens:
-                tok_to_orig_index.append(i)
-                all_doc_tokens.append(sub_token)
+            tok_to_orig_index.append(i)
+            all_doc_tokens.append(token)
+            # sub_tokens = tokenizer.tokenize(token)
+            # for sub_token in sub_tokens:
+            #     tok_to_orig_index.append(i)
+            #     all_doc_tokens.append(sub_token)
 
         yes_no_ques = example.orig_answer_text in ['YES', 'NO']
         tok_start_position = None
@@ -244,7 +288,32 @@ def convert_examples_to_features(examples,
                     all_doc_tokens, tok_start_position, tok_end_position,
                     tokenizer, example.orig_answer_text)
 
-        max_tokens_for_doc = max_seq_length - len(query_tokens) - 3
+        # if is_training:
+        #     if example.is_impossible:
+        #         tok_start_position = -1
+        #         tok_end_position = -1
+        #     elif yes_no_ques:
+        #         if example.orig_answer_text == "YES":
+        #             tok_start_position = -3
+        #             tok_end_position = -3
+        #         else:
+        #             tok_start_position = -2
+        #             tok_end_position = -2
+        #     else:
+        #         tok_start_position = orig_to_tok_index[example.start_position]
+
+        #         if example.end_position < len(example.doc_tokens) - 1:
+        #             tok_end_position = orig_to_tok_index[example.end_position +
+        #                                                  1] - 1
+        #         else:
+        #             tok_end_position = len(all_doc_tokens) - 1
+
+        #         (tok_start_position, tok_end_position) = _improve_answer_span(
+        #             all_doc_tokens, tok_start_position, tok_end_position,
+        #             tokenizer, example.orig_answer_text)
+
+        # max_tokens_for_doc = max_seq_length - len(query_tokens) - 3
+        max_tokens_for_doc = max_seq_length - len(query_tokens) - 5
 
         # We can have documents that are longer than the maximum sequence length.
         # To deal with this we do a sliding window approach, where we take chunks
@@ -331,10 +400,8 @@ def convert_examples_to_features(examples,
             end_position = None
 
             if is_training and not span_is_impossible:
-                # For training, if our document chunk does not contain an annotation
-                # we throw it out, since there is nothing to predict.
+                # For training, if our document chunk does not contain an annotation.
 
-                ## todo - need to cater for YES/NO
                 doc_start = doc_span.start
                 doc_end = doc_span.start + doc_span.length - 1
                 if not (tok_start_position >= doc_start
@@ -356,17 +423,6 @@ def convert_examples_to_features(examples,
             if (example_index < 20) and (FLAGS.verbose):
                 # if yes_no_ques:
                 logger.info("*** Example ***")
-                # logger.info("tok_start_position: %s" % (tok_start_position))
-                # logger.info("example.start_position: %s" %
-                #             (example.start_position))
-                # logger.info("tok_end_position: %s" % (tok_end_position))
-                # logger.info("example.end_position: %s" % (example.end_position))
-                # logger.info("doc_start: %s" % (doc_start))
-                # logger.info("doc_offset: %s" % (doc_offset))
-                # logger.info("example.is_impossible: %s" %
-                #             (example.is_impossible))
-                # logger.info("example.orig_answer_text: %s" %
-                #             (example.orig_answer_text))
 
                 logger.info("unique_id: %s" % (unique_id))
                 logger.info("example_index: %s" % (example_index))
@@ -453,7 +509,6 @@ def _check_is_max_context(doc_spans, cur_span_index, position):
 
 def load_and_cache_examples(input_file, tokenizer, is_training=True):
     """Get examples and features. Can either create new or load from cache."""
-    # model_name = list(filter(None, FLAGS.model_name_or_path.split('/'))).pop()
     features_cache = os.path.splitext(
         input_file)[0] + "_cache_features_{}".format(FLAGS.model_type)
     examples_cache = os.path.splitext(
@@ -518,7 +573,7 @@ RawResult = collections.namedtuple("RawResult",
 def write_predictions(all_examples, all_features, all_results, n_best_size,
                       max_answer_length, output_prediction_file,
                       output_nbest_file, output_null_log_odds_file,
-                      null_score_diff_threshold):
+                      null_threshold):
     """Write final predictions to the json file and log-odds of null if needed."""
     logger.info("Writing predictions to: %s" % (output_prediction_file))
     logger.info("Writing nbest to: %s" % (output_nbest_file))
@@ -626,9 +681,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                 tok_text = "".join(tok_text.split())
                 orig_text = "".join(orig_tokens)
 
-                # for now we dont postprocess final text first.
                 final_text = get_final_text(tok_text, orig_text)
-                # final_text = tok_text
 
                 if final_text in seen_predictions:
                     continue
@@ -702,7 +755,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             best_non_null_entry.end_logit)
         scores_diff_json[example.qas_id] = score_diff
 
-        if score_diff > null_score_diff_threshold:
+        if score_diff > null_threshold:
             all_predictions[example.qas_id] = ""
         else:
             all_predictions[example.qas_id] = best_non_null_entry.text
@@ -726,7 +779,15 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
     for k, v in all_predictions.items():
         ans_format = {}
         ans_format["id"] = k
-        ans_format["answer"] = v
+
+        # remove square bracket for YES/NO
+        if v == "[YES]":
+            ans_format["answer"] = "YES"
+        elif v == "[NO]":
+            ans_format["answer"] = "NO"
+        else:
+            ans_format["answer"] = v
+
         pred_answer.append(ans_format)
 
     with open(output_prediction_file, "w+") as writer:
@@ -978,7 +1039,7 @@ def get_final_text(pred_text, orig_text):
     # and `pred_text`, and check if they are the same length. If they are
     # NOT the same length, the heuristic has failed. If they are the same
     # length, we assume the characters are one-to-one aligned.
-    tokenizer = BasicTokenizer()
+    tokenizer = BasicTokenizer(do_lower_case=False)
 
     tok_text = "".join(tokenizer.tokenize(orig_text))
 

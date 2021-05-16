@@ -16,6 +16,7 @@
 """ Finetuning the library models for question-answering."""
 
 import os
+import time
 import random
 import logging
 
@@ -25,7 +26,10 @@ from absl import flags, app
 from tqdm import tqdm, trange
 from tensorboardX import SummaryWriter
 from pytorch_transformers import AdamW, WarmupLinearSchedule
-from transformers import AutoTokenizer, AutoModelForQuestionAnswering
+from transformers import (AutoTokenizer, AutoModelForQuestionAnswering,
+                          BertTokenizer, BertForQuestionAnswering,
+                          ElectraTokenizer, ElectraForQuestionAnswering,
+                          XLNetTokenizer, XLNetForQuestionAnswering)
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler)
 
 from utils_squad import load_and_cache_examples, RawResult, RawResultExtended, write_predictions, write_predictions_extended
@@ -48,6 +52,16 @@ AUTO_MODEL_CLASSES = {
     "ernie": "nghuyong/ernie-1.0",
     "bert-chinese-wwm": "hfl/chinese-bert-wwm",
     "roberta": "hfl/chinese-roberta-wwm-ext",
+    "electra": "hfl/chinese-legal-electra-small-discriminator",
+}
+
+MODEL_CONFIG = {
+    "bert-base-chinese": (BertTokenizer, BertForQuestionAnswering),
+    "xlnet-chinese": (XLNetTokenizer, XLNetForQuestionAnswering),
+    "ernie": (BertTokenizer, BertForQuestionAnswering),
+    "bert-chinese-wwm": (BertTokenizer, BertForQuestionAnswering),
+    "roberta": (BertTokenizer, BertForQuestionAnswering),
+    "electra": (ElectraTokenizer, ElectraForQuestionAnswering),
 }
 
 AVAILABLE_MODEL_TYPE = list(AUTO_MODEL_CLASSES.keys())
@@ -63,7 +77,7 @@ flags.DEFINE_string("model_name_or_path", None,
                     "Pretrained models. Override model type")
 flags.DEFINE_string("output_dir", None, "Output directory.")
 flags.DEFINE_float(
-    "null_score_diff_threshold", 0.0,
+    "null_threshold", 0.0,
     "If null_score - best_non_null is greater than the threshold predict null.")
 flags.DEFINE_integer("max_seq_length", 512, "Max sequence length.")
 flags.DEFINE_integer("doc_stride", 128,
@@ -71,8 +85,6 @@ flags.DEFINE_integer("doc_stride", 128,
 flags.DEFINE_integer("max_query_length", 64, "Max question length.")
 flags.DEFINE_boolean("do_train", False, "Run training")
 flags.DEFINE_boolean("do_eval", False, "Run evaluation")
-# flags.DEFINE_boolean("evaluate_during_training", False,
-#                      "Run eval during training at each logging step.")
 flags.DEFINE_integer("batch_size", 4, "Train batch size.")
 flags.DEFINE_integer("eval_batch_size", 4, "Eval batch size.")
 flags.DEFINE_float("learning_rate", 1e-4, "Learning rate.")
@@ -90,7 +102,6 @@ flags.DEFINE_integer("max_answer_length", 30, "Max length of answer.")
 flags.DEFINE_integer("logging_steps", 0, "Log every X steps.")
 flags.DEFINE_integer("eval_steps", 0, "Run eval every X steps.")
 flags.DEFINE_integer("save_steps", 0, "Save checkpoint every X steps.")
-# flags.DEFINE_boolean("eval_all_checkpoints", False, "Evaluate all checkpoints.")
 flags.DEFINE_boolean("overwrite_output", False, "Overwrite output.")
 flags.DEFINE_boolean("overwrite_cache", False, "Overwrite cache.")
 flags.DEFINE_integer("seed", 123, "Random seed.")
@@ -99,7 +110,6 @@ flags.DEFINE_boolean("verbose", False, "Save verbose output.")
 flags.mark_flag_as_required('train_file')
 flags.mark_flag_as_required('predict_file')
 flags.mark_flag_as_required('model_type')
-# flags.mark_flag_as_required('model_name_or_path')
 flags.mark_flag_as_required('output_dir')
 
 # MODEL_CLASSES = {
@@ -155,16 +165,16 @@ def train(train_dataset, model, tokenizer):
                                      warmup_steps=FLAGS.warmup_steps,
                                      t_total=t_total)
 
-    # Train!
     logger.info("***** Running training *****")
     logger.info("  Num examples = %d", len(train_dataset))
     logger.info("  Num Epochs = %d", FLAGS.num_epoch)
-    logger.info("  Instantaneous batch size per GPU = %d", FLAGS.batch_size)
+    logger.info("  Batch size = %d", FLAGS.batch_size)
     logger.info("  Total train batch size = %d",
                 FLAGS.batch_size * FLAGS.gradient_accumulation_steps)
     logger.info("  Gradient Accumulation steps = %d",
                 FLAGS.gradient_accumulation_steps)
     logger.info("  Total optimization steps = %d", t_total)
+    logger.info("  Learning rate = %d", FLAGS.learning_rate)
 
     global_step = 0
     tr_loss, logging_loss = 0.0, 0.0
@@ -177,6 +187,7 @@ def train(train_dataset, model, tokenizer):
     best_em = 0.0
     best_f1 = 0.0
     best_loss = 99.9
+    start_time = time.time()
 
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=False)
@@ -210,7 +221,7 @@ def train(train_dataset, model, tokenizer):
             tr_loss += loss.item()
             if (step + 1) % FLAGS.gradient_accumulation_steps == 0:
                 optimizer.step()
-                scheduler.step()    # Update learning rate schedule
+                scheduler.step()
                 model.zero_grad()
                 global_step += 1
 
@@ -220,6 +231,8 @@ def train(train_dataset, model, tokenizer):
                     if (FLAGS.eval_steps > 0) and (global_step %
                                                    FLAGS.eval_steps == 0):
                         results = evaluate(model, tokenizer)
+                        logger.info("eval result @ step global_step: {}".format(
+                            results))
                         em_overall = results["overall"]["em"]
                         f1_overall = results["overall"]["f1"]
                         tb_writer.add_scalar('eval_{}'.format("em"), em_overall,
@@ -259,16 +272,6 @@ def train(train_dataset, model, tokenizer):
                             model.save_pretrained(output_dir)
                             tokenizer.save_pretrained(output_dir)
 
-                # if FLAGS.save_steps > 0 and global_step % FLAGS.save_steps == 0:
-                #     # Save model checkpoint
-                #     output_dir = os.path.join(
-                #         FLAGS.output_dir, 'checkpoint-{}'.format(global_step))
-                #     if not os.path.exists(output_dir):
-                #         os.makedirs(output_dir)
-                #     model.save_pretrained(output_dir)
-                #     tokenizer.save_pretrained(output_dir)
-                #     logger.info("Saving model checkpoint to %s", output_dir)
-
             if FLAGS.max_steps > 0 and global_step > FLAGS.max_steps:
                 epoch_iterator.close()
                 break
@@ -276,6 +279,9 @@ def train(train_dataset, model, tokenizer):
             train_iterator.close()
             break
 
+    time_taken = time.time() - start_time
+    logger.info("  Training time = %d", time_taken)
+    
     tb_writer.close()
 
     return global_step, tr_loss / global_step
@@ -285,9 +291,6 @@ def evaluate(model, tokenizer, prefix=""):
     dataset, examples, features = load_and_cache_examples(FLAGS.predict_file,
                                                           tokenizer,
                                                           is_training=False)
-
-    if not os.path.exists(FLAGS.output_dir):
-        os.makedirs(FLAGS.output_dir)
 
     # Note that DistributedSampler samples randomly
     eval_sampler = SequentialSampler(dataset)
@@ -357,37 +360,43 @@ def evaluate(model, tokenizer, prefix=""):
         write_predictions(examples, features, all_results, FLAGS.n_best_size,
                           FLAGS.max_answer_length, output_prediction_file,
                           output_nbest_file, output_null_log_odds_file,
-                          FLAGS.null_score_diff_threshold)
+                          FLAGS.null_threshold)
 
     # Evaluate with CJRC competition evaluation script
     evaluator = CJRCEvaluator(FLAGS.predict_file)
-
-    # with open(output_prediction_file) as f:
     pred_data = CJRCEvaluator.preds_to_dict(output_prediction_file)
     results = evaluator.model_performance(pred_data)
-    
-    logger.info("  Eval result =", results)
-    print(results)
 
     return results
 
 
 def main(argv):
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
-
-    logging.basicConfig(filename="train.log" if FLAGS.do_train else "eval.log",
-                        filemode='w',
-                        format='%(name)s - %(levelname)s - %(message)s',
-                        level=logging.INFO)
-
     if os.path.exists(FLAGS.output_dir) and os.listdir(
             FLAGS.output_dir) and FLAGS.do_train and not FLAGS.overwrite_output:
         raise ValueError(
             "Output directory ({}) already exists and is not empty. Use --overwrite_output to overcome."
             .format(FLAGS.output_dir))
 
-    # Setup logging
+    if not os.path.exists(FLAGS.output_dir):
+        os.makedirs(FLAGS.output_dir)
+
+    # logging
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+
+    eval_filename = os.path.splitext(os.path.basename(FLAGS.predict_file))[0]
+
+    if FLAGS.do_train:
+        log_filename = os.path.join(FLAGS.output_dir, "train.log")
+    else:
+        log_filename = os.path.join(FLAGS.output_dir,
+                                    "eval_{}.log".format(eval_filename))
+
+    logging.basicConfig(filename=log_filename,
+                        filemode='w',
+                        format='%(name)s - %(levelname)s - %(message)s',
+                        level=logging.INFO)
+
     logging.basicConfig(
         format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
         datefmt='%m/%d/%Y %H:%M:%S',
@@ -399,17 +408,10 @@ def main(argv):
     torch.manual_seed(FLAGS.seed)
 
     FLAGS.model_type = FLAGS.model_type.lower()
-    # config_class, model_class, tokenizer_class = MODEL_CLASSES[FLAGS.model_type]
-    # config = config_class.from_pretrained(FLAGS.model_name_or_path)
-    # tokenizer = tokenizer_class.from_pretrained(FLAGS.model_name_or_path)
-    # model = model_class.from_pretrained(
-    #     FLAGS.model_name_or_path,
-    #     from_tf=bool('.ckpt' in FLAGS.model_name_or_path),
-    #     config=config)
     if FLAGS.model_name_or_path:
-        tokenizer = AutoTokenizer.from_pretrained(FLAGS.model_name_or_path)
-        model = AutoModelForQuestionAnswering.from_pretrained(
-            FLAGS.model_name_or_path)
+        config = MODEL_CONFIG[FLAGS.model_type]
+        tokenizer = config[0].from_pretrained(FLAGS.model_name_or_path)
+        model = config[1].from_pretrained(FLAGS.model_name_or_path)
     else:
         tokenizer = AutoTokenizer.from_pretrained(
             AUTO_MODEL_CLASSES[FLAGS.model_type])
@@ -429,53 +431,13 @@ def main(argv):
         logger.info(" global_step = %s, average loss = %s", global_step,
                     tr_loss)
 
-        # Save the trained model and the tokenizer
-        if not os.path.exists(FLAGS.output_dir):
-            os.makedirs(FLAGS.output_dir)
-
         logger.info("Saving model checkpoint to %s", FLAGS.output_dir)
         model.save_pretrained(FLAGS.output_dir)
         tokenizer.save_pretrained(FLAGS.output_dir)
 
-        # # torch.save(FLAGS, os.path.join(FLAGS.output_dir, 'training_FLAGS.bin'))
-
     if FLAGS.do_eval:
         results = evaluate(model, tokenizer, prefix=FLAGS.model_type)
-        logger.info(results)
-
-    # # Evaluation - we can ask to evaluate all the checkpoints (sub-directories) in a directory
-    # results = {}
-    # if FLAGS.do_eval:
-    #     checkpoints = [FLAGS.output_dir]
-    #     if FLAGS.eval_all_checkpoints:
-    #         checkpoints = list(
-    #             os.path.dirname(c) for c in sorted(
-    #                 glob.glob(FLAGS.output_dir + '/**/' + WEIGHTS_NAME,
-    #                           recursive=True)))
-    #         logging.getLogger("pytorch_transformers.modeling_utils").setLevel(
-    #             logging.WARN)  # Reduce model loading logs
-
-    #     logger.info("Evaluate the following checkpoints: %s", checkpoints)
-
-    #     for checkpoint in checkpoints:
-    #         # Reload the model
-    #         global_step = checkpoint.split(
-    #             '-')[-1] if len(checkpoints) > 1 else ""
-    #         model = model_class.from_pretrained(checkpoint)
-    #         model.to(DEVICE)
-
-    #         # Evaluate
-    #         evaluate(model, tokenizer, prefix=global_step)
-    #         # result = evaluate(model, tokenizer, prefix=global_step)
-
-    #         # result = dict(
-    #         #     (k + ('_{}'.format(global_step) if global_step else ''), v)
-    #         #     for k, v in result.items())
-    #         # results.update(result)
-
-    # logger.info("Results: {}".format(results))
-
-    # return results
+        logger.info("do_eval results: {}".format(results))
 
 
 if __name__ == '__main__':
