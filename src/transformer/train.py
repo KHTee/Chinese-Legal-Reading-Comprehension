@@ -12,6 +12,7 @@ from pytorch_transformers import AdamW, WarmupLinearSchedule
 from transformers import (BertTokenizer, BertForQuestionAnswering,
                           ElectraTokenizer, ElectraForQuestionAnswering,
                           BertModel)
+from transformers import AutoModel, AutoTokenizer
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler)
 
 from utils import load_and_cache_examples, RawResult, write_predictions
@@ -319,9 +320,11 @@ def main(argv):
   FLAGS.model_type = FLAGS.model_type.lower()
 
   if FLAGS.model_name_or_path:
-    config = MODEL_CONFIG[FLAGS.model_type]
-    tokenizer = config[0].from_pretrained(FLAGS.model_name_or_path)
-    bert_model = config[1].from_pretrained(FLAGS.model_name_or_path)
+    # config = MODEL_CONFIG[FLAGS.model_type]
+    # tokenizer = config[0].from_pretrained(FLAGS.model_name_or_path)
+    # bert_model = config[1].from_pretrained(FLAGS.model_name_or_path)
+    tokenizer = AutoTokenizer.from_pretrained("hfl/chinese-roberta-wwm-ext")
+    bert_model = AutoModel.from_pretrained("thunlp/Lawformer")
   else:
     tokenizer = BertTokenizer.from_pretrained("bert-base-chinese")
     bert_model = BertModel.from_pretrained("bert-base-chinese")
