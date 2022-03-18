@@ -320,16 +320,16 @@ def main(argv):
   FLAGS.model_type = FLAGS.model_type.lower()
 
   if FLAGS.model_name_or_path:
-    # config = MODEL_CONFIG[FLAGS.model_type]
-    # tokenizer = config[0].from_pretrained(FLAGS.model_name_or_path)
-    # bert_model = config[1].from_pretrained(FLAGS.model_name_or_path)
-    tokenizer = AutoTokenizer.from_pretrained("hfl/chinese-roberta-wwm-ext")
-    bert_model = AutoModel.from_pretrained("thunlp/Lawformer")
+    config = MODEL_CONFIG[FLAGS.model_type]
+    tokenizer = config[0].from_pretrained(FLAGS.model_name_or_path)
+    plm_model = config[1].from_pretrained(FLAGS.model_name_or_path)
+    # tokenizer = AutoTokenizer.from_pretrained("hfl/chinese-roberta-wwm-ext")
+    # plm_model = AutoModel.from_pretrained("thunlp/Lawformer")
   else:
-    tokenizer = BertTokenizer.from_pretrained("bert-base-chinese")
-    bert_model = BertModel.from_pretrained("bert-base-chinese")
+    tokenizer = BertTokenizer.from_pretrained(FLAGS.model_type)
+    plm_model = BertModel.from_pretrained(FLAGS.model_type)
 
-  model = BertMulti(bert_model)
+  model = BertMulti(plm_model)
 
   if FLAGS.trained_weight:
     model.load_state_dict(torch.load(FLAGS.trained_weight))
@@ -350,6 +350,8 @@ def main(argv):
     model_to_save = model.module if hasattr(model, 'module') else model
     torch.save(model_to_save.state_dict(),
                os.path.join(FLAGS.output_dir, "model.pt"))
+    tokenizer.save_pretrained(FLAGS.output_dir)
+    plm_model.save_pretrained(FLAGS.output_dir)
 
   if FLAGS.do_eval:
     results = evaluate(model, tokenizer, prefix=FLAGS.model_type)
