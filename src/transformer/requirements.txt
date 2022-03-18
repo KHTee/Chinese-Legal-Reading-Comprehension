@@ -1,7 +1,7 @@
 absl-py==0.15.0
 numpy==1.19.5
 pytorch-transformers==1.2.0
-tensorflow==2.6.2
+tensorflow==2.6.3
 torch==1.10.2
 tqdm==4.63.0
 transformers==4.17.0
